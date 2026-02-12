@@ -137,7 +137,12 @@ class LRCU(Module, strict=True):
         B = self.calculate_B(hidden, input)
 
         # This could be also input dependent, not only state dep.
-        elastance_term = self.weight_elastance_kernel * hidden + self.weight_elastance_bias
+        elastance_term = jnp.apply_along_axis(jnp.diag, -1, self.weight_elastance_kernel) * hidden + self.weight_elastance_bias
+        elastance_term = jnp.sum(elastance_term, axis=-2)
+        # this can be simplified
+        # elastance_term = self.weight_elastance_kernel * hidden + self.weight_elastance_bias
+        # to get the same result with the original code:
+        # elastance_term = self.weight_elastance_kernel * hidden + len(self.weight_elastance_kernel) * self.weight_elastance_bias
 
         if self.use_symmetric: # type of elastance
             elastance = (jnn.sigmoid(elastance_term + self.weight_elastance_shift) - jnn.sigmoid(elastance_term - self.weight_elastance_shift)) * self.dt

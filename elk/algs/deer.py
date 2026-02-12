@@ -632,6 +632,76 @@ def gru_diagonal_derivative(carry, inputs, params):
     # return term3 + z
     return term1 + term2 + term3 + z
 
+def lrc_diagonal_derivative(carry, inputs, params):
+    """
+    For given carry, inputs, and params, returns the diagonal of the Jacobian of a flax.linen GRU cell
+
+    Args:
+        carry: previous hidden state, jax.Array (nh,)
+        inputs: inputs jax.Array(ninput,)
+        params: weight matrices and biases of the GRU cell
+
+    GRU(
+    gru=LRCU(
+        weight_sensory_mu=f32[32],
+        weight_sensory_sigma=f32[32],
+        weight_sensory_w=f32[32,32],
+        weight_sensory_h=f32[32,32],
+        weight_mu=f32[32],
+        weight_sigma=f32[32],
+        weight_w=f32[32],
+        weight_h=f32[32],
+        weight_gleak=f32[32],
+        weight_vleak=f32[32],
+        weight_elastance_kernel=f32[32],
+        weight_elastance_bias=f32[32],
+        weight_elastance_shift=f32[32],
+        use_symmetric=False,
+        dt=1.0,
+        input_size=32,
+        hidden_size=32
+    ),
+    use_scan=bool[]
+    )
+    """
+
+    sensory_syn = sigmoid(params.gru.weight_sensory_sigma * (inputs - params.gru.weight_sensory_mu))
+    sensory_syn_w = params.gru.weight_sensory_w @ sensory_syn
+
+    syn_before_activation = params.gru.weight_sigma * (carry - params.gru.weight_mu)
+    syn = sigmoid(syn_before_activation)
+    syn_w = params.gru.weight_w * syn
+    f = params.gru.weight_gleak + sensory_syn_w + syn_w
+    a = -sigmoid(f)
+
+    sensory_syn_h = params.gru.weight_sensory_h @ sensory_syn
+    syn_h = params.gru.weight_h * syn
+    g = params.gru.weight_gleak + sensory_syn_h + syn_h
+    b = params.gru.weight_vleak*tanh(g)
+
+    # elastance_term1 = jnp.apply_along_axis(jnp.diag, -1, params.gru.weight_elastance_kernel) * carry + params.gru.weight_elastance_bias
+    # elastance_term1 = jnp.sum(elastance_term1, axis=-2) #original implementation
+    # This is equivalent to the lines above, but more efficient
+    elastance_term = params.gru.weight_elastance_kernel * carry + len(params.gru.weight_elastance_kernel) * params.gru.weight_elastance_bias
+    # This would be the simplified version
+    # elastance_term = params.gru.weight_elastance_kernel * carry + params.gru.weight_elastance_bias
+
+    elastance = sigmoid(elastance_term) #dt=1
+
+    v_prime = carry * a + b
+
+    # dadh checked
+    dadh = -sigmoid(f) * (1 - sigmoid(f)) * params.gru.weight_w * sigmoid(syn_before_activation) * (1 - sigmoid(syn_before_activation)) * params.gru.weight_sigma
+
+    # dbdh checked
+    dbdh = params.gru.weight_vleak * (1 - tanh(g) ** 2) * params.gru.weight_h * sigmoid(syn_before_activation) * (1 - sigmoid(syn_before_activation)) * params.gru.weight_sigma
+
+    vprimedh = dadh * carry + a + dbdh
+
+    elastancedh = sigmoid(elastance_term) * (1 - sigmoid(elastance_term)) * params.gru.weight_elastance_kernel
+
+    return 1 + elastancedh * v_prime + elastance * vprimedh
+
 
 # ---------------------------------------------------------------------------#
 #                                Quasi
@@ -762,7 +832,7 @@ def diagonal_deer_iteration_helper(
             # print("Using qmem_efficient")
             # MF TODO: make the same thing for lrc, to be truly memory efficient
             gts = [
-                -jax.vmap(gru_diagonal_derivative, in_axes=(0, 0, None))(
+                -jax.vmap(lrc_diagonal_derivative, in_axes=(0, 0, None))(
                     ytparams[0], xinput, params
                 )
             ]
@@ -801,7 +871,7 @@ def diagonal_deer_iteration_helper(
         if qmem_efficient:
             # XG change to be more memory efficient
             gts = [
-                -jax.vmap(gru_diagonal_derivative, in_axes=(0, 0, None))(
+                -jax.vmap(lrc_diagonal_derivative, in_axes=(0, 0, None))(
                     ytparams[0], xinput, params
                 )
             ]
